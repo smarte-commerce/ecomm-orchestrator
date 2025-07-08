@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -13,6 +14,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.winnguyen1905.orchestrator.core.feign.OrderServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.PaymentServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.ProductServiceClient;
+import com.winnguyen1905.orchestrator.core.feign.PromotionServiceClient;
+import com.winnguyen1905.orchestrator.messaging.KafkaProducer;
+import com.winnguyen1905.orchestrator.model.event.CouponAppliedEvent;
 import com.winnguyen1905.orchestrator.model.event.OrderApprovedEvent;
 import com.winnguyen1905.orchestrator.model.event.OrderCancelledEvent;
 import com.winnguyen1905.orchestrator.model.event.OrderCreatedEvent;
@@ -21,9 +25,12 @@ import com.winnguyen1905.orchestrator.model.event.PaymentProcessedEvent;
 import com.winnguyen1905.orchestrator.model.event.ProductReservationFailedEvent;
 import com.winnguyen1905.orchestrator.model.event.ProductReservedEvent;
 import com.winnguyen1905.orchestrator.model.event.SagaEvent;
+import com.winnguyen1905.orchestrator.model.request.CouponValidationRequest;
 import com.winnguyen1905.orchestrator.model.request.PaymentRequest;
 import com.winnguyen1905.orchestrator.model.request.RefundRequest;
 import com.winnguyen1905.orchestrator.model.request.ReservationRequest;
+import com.winnguyen1905.orchestrator.model.response.CouponValidationResponse;
+import com.winnguyen1905.orchestrator.model.response.KafkaOrchestratorResponseDTO;
 import com.winnguyen1905.orchestrator.model.response.OrderResponse;
 import com.winnguyen1905.orchestrator.model.response.PaymentResponse;
 import com.winnguyen1905.orchestrator.model.response.ReservationResponse;
@@ -46,15 +53,26 @@ public class OrderSagaOrchestrator {
     private final OrderServiceClient orderServiceClient;
     private final ProductServiceClient productServiceClient;
     private final PaymentServiceClient paymentServiceClient;
+    private final PromotionServiceClient promotionServiceClient;
+    private final KafkaProducer kafkaProducer;
     
     // Kafka topics
-    private final String orderCreatedTopic;
-    private final String productReservedTopic;
-    private final String productReservationFailedTopic;
-    private final String paymentProcessedTopic;
-    private final String paymentFailedTopic;
-    private final String orderApprovedTopic;
-    private final String orderCancelledTopic;
+    @Value("${topic.name.order.created}")
+    private String orderCreatedTopic;
+    @Value("${topic.name.stock.reserved}")
+    private String productReservedTopic;
+    @Value("${topic.name.stock.cancel}")
+    private String productReservationFailedTopic;
+    @Value("${topic.name.payment.out}")
+    private String paymentProcessedTopic;
+    @Value("${topic.name.payment.cancel}")
+    private String paymentFailedTopic;
+    @Value("${topic.name.order.approve}")
+    private String orderApprovedTopic;
+    @Value("${topic.name.order.reject}")
+    private String orderCancelledTopic;
+    @Value("${topic.name.promotion.out}")
+    private String couponValidatedTopic;
     
     /**
      * Starts the SAGA for a new order
@@ -104,6 +122,46 @@ public class OrderSagaOrchestrator {
             log.error("Failed to start order saga for orderId: " + orderId, e);
             throw new RuntimeException("Failed to start order saga", e);
         }
+    }
+    
+    /**
+     * Process the OrderCreated event
+     */
+    @Transactional
+    public void processOrderCreated(OrderCreatedEvent event) {
+        handleOrderCreated(event);
+    }
+    
+    /**
+     * Process the ProductReserved event
+     */
+    @Transactional
+    public void processProductReserved(ProductReservedEvent event) {
+        handleProductReserved(event);
+    }
+    
+    /**
+     * Process the ProductReservationFailed event
+     */
+    @Transactional
+    public void processProductReservationFailed(ProductReservationFailedEvent event) {
+        handleProductReservationFailed(event);
+    }
+    
+    /**
+     * Process the PaymentProcessed event
+     */
+    @Transactional
+    public void processPaymentProcessed(PaymentProcessedEvent event) {
+        handlePaymentProcessed(event);
+    }
+    
+    /**
+     * Process the CouponApplied event
+     */
+    @Transactional
+    public void processCouponApplied(CouponAppliedEvent event) {
+        handleCouponApplied(event);
     }
     
     /**
@@ -206,7 +264,7 @@ public class OrderSagaOrchestrator {
     }
     
     /**
-     * Handles ProductReserved event by processing payment
+     * Handles ProductReserved event by validating coupon and discount
      */
     @Transactional
     public void handleProductReserved(ProductReservedEvent event) {
@@ -221,7 +279,7 @@ public class OrderSagaOrchestrator {
                     .orElseThrow(() -> new RuntimeException("Saga not found: " + sagaId));
             
             sagaState.setStatus(SagaStatus.PRODUCT_RESERVED);
-            sagaState.setCurrentStep("PROCESS_PAYMENT");
+            sagaState.setCurrentStep("VALIDATE_COUPON");
             sagaStateRepository.save(sagaState);
             
             // Publish ProductReserved event to Kafka
@@ -235,54 +293,50 @@ public class OrderSagaOrchestrator {
                 throw new RuntimeException("Order not found: " + orderId);
             }
             
-            // Prepare payment request
-            PaymentRequest paymentRequest = PaymentRequest.builder()
-                    .orderId(orderId)
-                    .customerId(order.getCustomerId())
-                    .amount(order.getTotalAmount())
-                    .paymentMethod("CREDIT_CARD") // This would come from the order in a real implementation
-                    .currency("USD")
-                    .description("Payment for order " + order.getOrderNumber())
-                    .build();
-            
-            // Call Payment service to process payment
-            RestResponse<PaymentResponse> paymentResponse = paymentServiceClient.processPayment(paymentRequest).getBody();
-            PaymentResponse payment = paymentResponse.data();
-            
-            if (payment != null && "COMPLETED".equals(payment.getStatus())) {
-                // Payment successful
-                handlePaymentProcessed(PaymentProcessedEvent.builder()
-                        .eventId(UUID.randomUUID())
-                        .sagaId(sagaId)
+            // Check if there's a coupon code in the order
+            if (order.getCouponCode() != null && !order.getCouponCode().isEmpty()) {
+                // Prepare coupon validation request
+                CouponValidationRequest couponRequest = CouponValidationRequest.builder()
                         .orderId(orderId)
-                        .eventType("PaymentProcessed")
-                        .timestamp(Instant.now())
-                        .retryCount(0)
-                        .correlationId(sagaId)
-                        .causationId(event.getEventId())
-                        .paymentId(payment.getPaymentId())
-                        .amount(payment.getAmount())
-                        .transactionId(payment.getTransactionId())
-                        .paymentMethod(payment.getPaymentMethod())
-                        .processedAt(payment.getProcessedAt())
-                        .build());
+                        .customerId(order.getCustomerId())
+                        .couponCode(order.getCouponCode())
+                        .orderAmount(order.getTotalAmount())
+                        .build();
+                
+                // Call Promotion service to validate coupon
+                RestResponse<CouponValidationResponse> couponResponse = promotionServiceClient.validateCoupon(couponRequest).getBody();
+                CouponValidationResponse couponValidation = couponResponse.data();
+                
+                if (couponValidation != null && couponValidation.isValid()) {
+                    // Coupon validation successful
+                    CouponAppliedEvent couponEvent = CouponAppliedEvent.builder()
+                            .eventId(UUID.randomUUID())
+                            .sagaId(sagaId)
+                            .orderId(orderId)
+                            .eventType("CouponApplied")
+                            .timestamp(Instant.now())
+                            .retryCount(0)
+                            .correlationId(sagaId)
+                            .causationId(event.getEventId())
+                            .couponId(couponValidation.getCouponId())
+                            .couponCode(order.getCouponCode())
+                            .discountAmount(couponValidation.getDiscountAmount())
+                            .discountPercentage(couponValidation.getDiscountPercentage())
+                            .validUntil(couponValidation.getValidUntil())
+                            .isApplied(true)
+                            .build();
+                    
+                    handleCouponApplied(couponEvent);
+                } else {
+                    // Coupon validation failed, but we continue with payment processing
+                    log.warn("Coupon validation failed for order: {}, continuing with original amount", orderId);
+                    
+                    // Process payment with original amount
+                    processPayment(sagaId, orderId, order, event.getEventId());
+                }
             } else {
-                // Payment failed
-                handlePaymentFailed(PaymentFailedEvent.builder()
-                        .eventId(UUID.randomUUID())
-                        .sagaId(sagaId)
-                        .orderId(orderId)
-                        .eventType("PaymentFailed")
-                        .timestamp(Instant.now())
-                        .retryCount(0)
-                        .correlationId(sagaId)
-                        .causationId(event.getEventId())
-                        .amount(order.getTotalAmount())
-                        .errorCode(payment != null ? "PAYMENT_FAILED" : "PAYMENT_SERVICE_ERROR")
-                        .errorMessage(payment != null ? payment.getErrorMessage() : "Payment service error")
-                        .paymentMethod("CREDIT_CARD")
-                        .failedAt(Instant.now())
-                        .build());
+                // No coupon code, proceed directly to payment
+                processPayment(sagaId, orderId, order, event.getEventId());
             }
         } catch (Exception e) {
             log.error("Error handling ProductReserved event for orderId: " + orderId, e);
@@ -292,7 +346,7 @@ public class OrderSagaOrchestrator {
                     .orElseThrow(() -> new RuntimeException("Saga not found: " + sagaId));
             
             sagaState.setStatus(SagaStatus.FAILED);
-            sagaState.setErrorMessage("Failed to process payment: " + e.getMessage());
+            sagaState.setErrorMessage("Failed to process discount: " + e.getMessage());
             sagaStateRepository.save(sagaState);
             
             // Create and publish OrderCancelled event
@@ -305,13 +359,145 @@ public class OrderSagaOrchestrator {
                     .retryCount(0)
                     .correlationId(sagaId)
                     .causationId(event.getEventId())
-                    .reason("Failed to process payment: " + e.getMessage())
+                    .reason("Failed to process discount: " + e.getMessage())
                     .cancelledBy("SYSTEM")
                     .shouldRefund(false)
                     .shouldReleaseInventory(true)
                     .build();
             
             kafkaTemplate.send(orderCancelledTopic, cancelEvent);
+        }
+    }
+    
+    /**
+     * Handles CouponApplied event by processing payment
+     */
+    @Transactional
+    public void handleCouponApplied(CouponAppliedEvent event) {
+        UUID sagaId = event.getSagaId();
+        UUID orderId = event.getOrderId();
+        
+        log.info("Handling CouponApplied event for orderId: {}, sagaId: {}", orderId, sagaId);
+        
+        try {
+            // Update saga state
+            ESagaState sagaState = sagaStateRepository.findById(sagaId)
+                    .orElseThrow(() -> new RuntimeException("Saga not found: " + sagaId));
+            
+            sagaState.setStatus(SagaStatus.COUPON_APPLIED);
+            sagaState.setCurrentStep("PROCESS_PAYMENT");
+            sagaStateRepository.save(sagaState);
+            
+            // Publish CouponApplied event to Kafka
+            kafkaTemplate.send(couponValidatedTopic, event);
+            
+            // Get order details
+            RestResponse<OrderResponse> response = orderServiceClient.getOrderById(orderId).getBody();
+            OrderResponse order = response.data();
+            
+            if (order == null) {
+                throw new RuntimeException("Order not found: " + orderId);
+            }
+            
+            // Update order with discount information
+            orderServiceClient.updateOrderDiscount(orderId, event.getDiscountAmount());
+            
+            // Process payment with discounted amount
+            processPayment(sagaId, orderId, order, event.getEventId());
+            
+        } catch (Exception e) {
+            log.error("Error handling CouponApplied event for orderId: " + orderId, e);
+            
+            // Update saga state to failed
+            ESagaState sagaState = sagaStateRepository.findById(sagaId)
+                    .orElseThrow(() -> new RuntimeException("Saga not found: " + sagaId));
+            
+            sagaState.setStatus(SagaStatus.FAILED);
+            sagaState.setErrorMessage("Failed to apply discount: " + e.getMessage());
+            sagaStateRepository.save(sagaState);
+            
+            // Send cancel coupon message
+            KafkaOrchestratorResponseDTO cancelCouponPayload = KafkaOrchestratorResponseDTO.builder()
+                    .orderId(orderId)
+                    .couponId(event.getCouponId())
+                    .status("CANCELLED")
+                    .message("Failed to apply discount: " + e.getMessage())
+                    .build();
+            
+            kafkaProducer.sendCancelCoupon(cancelCouponPayload);
+            
+            // Create and publish OrderCancelled event
+            OrderCancelledEvent cancelEvent = OrderCancelledEvent.builder()
+                    .eventId(UUID.randomUUID())
+                    .sagaId(sagaId)
+                    .orderId(orderId)
+                    .eventType("OrderCancelled")
+                    .timestamp(Instant.now())
+                    .retryCount(0)
+                    .correlationId(sagaId)
+                    .causationId(event.getEventId())
+                    .reason("Failed to apply discount: " + e.getMessage())
+                    .cancelledBy("SYSTEM")
+                    .shouldRefund(false)
+                    .shouldReleaseInventory(true)
+                    .build();
+            
+            kafkaTemplate.send(orderCancelledTopic, cancelEvent);
+        }
+    }
+    
+    /**
+     * Process payment with either original or discounted amount
+     */
+    private void processPayment(UUID sagaId, UUID orderId, OrderResponse order, UUID causationId) {
+        // Prepare payment request
+        PaymentRequest paymentRequest = PaymentRequest.builder()
+                .orderId(orderId)
+                .customerId(order.getCustomerId())
+                .amount(order.getTotalAmount())
+                .paymentMethod("CREDIT_CARD") // This would come from the order in a real implementation
+                .currency("USD")
+                .description("Payment for order " + order.getOrderNumber())
+                .build();
+        
+        // Call Payment service to process payment
+        RestResponse<PaymentResponse> paymentResponse = paymentServiceClient.processPayment(paymentRequest).getBody();
+        PaymentResponse payment = paymentResponse.data();
+        
+        if (payment != null && "COMPLETED".equals(payment.getStatus())) {
+            // Payment successful
+            handlePaymentProcessed(PaymentProcessedEvent.builder()
+                    .eventId(UUID.randomUUID())
+                    .sagaId(sagaId)
+                    .orderId(orderId)
+                    .eventType("PaymentProcessed")
+                    .timestamp(Instant.now())
+                    .retryCount(0)
+                    .correlationId(sagaId)
+                    .causationId(causationId)
+                    .paymentId(payment.getPaymentId())
+                    .amount(payment.getAmount())
+                    .transactionId(payment.getTransactionId())
+                    .paymentMethod(payment.getPaymentMethod())
+                    .processedAt(payment.getProcessedAt())
+                    .build());
+        } else {
+            // Payment failed
+            handlePaymentFailed(PaymentFailedEvent.builder()
+                    .eventId(UUID.randomUUID())
+                    .sagaId(sagaId)
+                    .orderId(orderId)
+                    .eventType("PaymentFailed")
+                    .timestamp(Instant.now())
+                    .retryCount(0)
+                    .correlationId(sagaId)
+                    .causationId(causationId)
+                    .amount(order.getTotalAmount())
+                    .errorCode(payment != null ? "PAYMENT_FAILED" : "PAYMENT_SERVICE_ERROR")
+                    .errorMessage(payment != null ? payment.getErrorMessage() : "Payment service error")
+                    .paymentMethod("CREDIT_CARD")
+                    .failedAt(Instant.now())
+                    .build());
         }
     }
     
@@ -342,7 +528,13 @@ public class OrderSagaOrchestrator {
             
             // Call Product service to confirm reservation
             // This would convert the reserved inventory to sold inventory
-            // In a real implementation, we would iterate through the order items
+            KafkaOrchestratorResponseDTO updateProductPayload = KafkaOrchestratorResponseDTO.builder()
+                    .orderId(orderId)
+                    .status("CONFIRMED")
+                    .message("Order confirmed, update inventory")
+                    .build();
+            
+            kafkaProducer.sendUpdateProduct(updateProductPayload);
             
             // Update saga state to completed
             sagaState.setStatus(SagaStatus.COMPLETED);
@@ -388,6 +580,15 @@ public class OrderSagaOrchestrator {
                         .build();
                 
                 paymentServiceClient.issueRefund(event.getPaymentId(), refundRequest);
+                
+                // Send cancel messages
+                KafkaOrchestratorResponseDTO cancelProductPayload = KafkaOrchestratorResponseDTO.builder()
+                        .orderId(orderId)
+                        .status("CANCELLED")
+                        .message("Order approval failed, release inventory")
+                        .build();
+                
+                kafkaProducer.sendCancelPayment(cancelProductPayload);
                 
                 // Create and publish OrderCancelled event
                 OrderCancelledEvent cancelEvent = OrderCancelledEvent.builder()
@@ -438,8 +639,28 @@ public class OrderSagaOrchestrator {
             // Update order status to payment failed
             orderServiceClient.updateOrderStatus(orderId, "PAYMENT_FAILED", event.getErrorMessage());
             
-            // Start compensation - release inventory
-            // In a real implementation, we would call the Product service to release the inventory
+            // Send cancel messages
+            KafkaOrchestratorResponseDTO cancelProductPayload = KafkaOrchestratorResponseDTO.builder()
+                    .orderId(orderId)
+                    .status("CANCELLED")
+                    .message("Payment failed, release inventory")
+                    .build();
+            
+            kafkaProducer.sendReserveProduct(cancelProductPayload);
+            
+            RestResponse<OrderResponse> response = orderServiceClient.getOrderById(orderId).getBody();
+            OrderResponse order = response.data();
+            
+            // Cancel coupon if one was applied
+            if (order != null && order.getCouponCode() != null && !order.getCouponCode().isEmpty()) {
+                KafkaOrchestratorResponseDTO cancelCouponPayload = KafkaOrchestratorResponseDTO.builder()
+                        .orderId(orderId)
+                        .status("CANCELLED")
+                        .message("Payment failed, cancel coupon")
+                        .build();
+                
+                kafkaProducer.sendCancelCoupon(cancelCouponPayload);
+            }
             
             // Create and publish OrderCancelled event
             OrderCancelledEvent cancelEvent = OrderCancelledEvent.builder()

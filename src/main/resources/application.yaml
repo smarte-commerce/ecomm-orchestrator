@@ -31,6 +31,7 @@ spring:
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       properties:
         spring.json.type.mapping: event:com.winnguyen1905.orchestrator.model.event.SagaEvent
+        spring.json.trusted.packages: com.winnguyen1905.*
     consumer:
       group-id: orchestrator-group
       auto-offset-reset: earliest
@@ -39,6 +40,10 @@ spring:
       properties:
         spring.json.type.mapping: event:com.winnguyen1905.orchestrator.model.event.SagaEvent
         spring.json.trusted.packages: com.winnguyen1905.*
+      order-group-id: order
+      stock-group-id: stock
+      payment-group-id: payment
+      promotion-group-id: promotion
 
   # Redis Configuration for saga state
   data:
@@ -88,12 +93,35 @@ microservices:
     url: http://ORDER-SERVICE
   payment-service:
     url: http://PAYMENT-SERVICE
-  inventory-service:
+  product-service:
     url: http://PRODUCT-SERVICE
   shipping-service:
     url: http://SHIPPING-SERVICE
+  promotion-service:
+    url: http://PROMOTION-SERVICE
 
 # Kafka Topics
+topic:
+  name:
+    # Order topics
+    order.created: create-order
+    order.reject: reject-order
+    order.approve: approve-order
+    # Stock topics
+    stock.in: reserve-product
+    stock.reserved: product-reserved
+    stock.cancel: product-cancel
+    stock.update: product-update
+    # Payment topics
+    payment.in: process-payment
+    payment.out: payment-processed
+    payment.cancel: cancel-payment
+    # Promotion topics
+    promotion.in: validate-coupon
+    promotion.out: coupon-validated
+    promotion.cancel: cancel-coupon
+
+# Kafka Topics (for backward compatibility with KafkaConfig.java)
 kafka:
   topics:
     order-created: order-created-events
@@ -103,6 +131,8 @@ kafka:
     payment-failed: payment-failed-events
     order-approved: order-approved-events
     order-cancelled: order-cancelled-events
+    coupon-applied: coupon-applied-events
+    split-payment-processed: split-payment-processed-events
 
 # Saga configuration
 saga:
