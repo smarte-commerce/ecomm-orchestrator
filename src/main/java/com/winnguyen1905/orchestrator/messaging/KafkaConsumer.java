@@ -17,7 +17,8 @@ public class KafkaConsumer {
   @KafkaListener(topics = "${topic.name.order.created}", groupId = "${spring.kafka.consumer.order-group-id}")
   public void consumeOrderCreated(OrderCreatedEvent event) {
     log.info("Order created event received: {}", event);
-    orderSagaOrchestrator.processOrderCreated(event);
+    // Use the new enhanced order creation flow
+    orderSagaOrchestrator.handleCreateOrder_New(event);
   }
 
   @KafkaListener(topics = "${topic.name.stock.reserved}", groupId = "${spring.kafka.consumer.stock-group-id}")
