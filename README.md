@@ -256,6 +256,34 @@ sequenceDiagram
     end
 ```
 
+## Order Orchestration Flowchart
+
+The following flowchart visualizes the main steps of the orchestrator's SAGA-based order processing, including compensation logic for failures:
+
+```mermaid
+flowchart TD
+    Client["Client"] -->|"1. Place Order"| OrderService["Order Service"]
+    OrderService -->|"2. Start Saga"| Orchestrator["Orchestrator Service"]
+    Orchestrator -->|"3. Reserve Inventory"| ProductService["Product Service"]
+    ProductService -->|"4. Inventory Reserved/Failed"| Orchestrator
+    Orchestrator -->|"5. Validate Coupon"| PromotionService["Promotion Service"]
+    PromotionService -->|"6. Coupon Applied/Failed"| Orchestrator
+    Orchestrator -->|"7. Process Payment"| PaymentService["Payment Service"]
+    PaymentService -->|"8. Payment Processed/Failed"| Orchestrator
+    Orchestrator -->|"9. Order Approved/Rejected"| OrderService
+    subgraph "Compensation"
+        Orchestrator -->|"Failure"| CompensationHandler["Compensation Handler"]
+        CompensationHandler -->|"Release Inventory"| ProductService
+        CompensationHandler -->|"Cancel Coupon"| PromotionService
+        CompensationHandler -->|"Refund Payment"| PaymentService
+    end
+```
+
+**Explanation:**
+- The orchestrator coordinates the order process across services (inventory, promotion, payment, order).
+- If any step fails, compensation logic is triggered to roll back previous actions (e.g., release inventory, cancel coupon, refund payment).
+- This ensures eventual consistency and robust error handling in distributed transactions.
+
 ## Key Components
 
 The service consists of several key components:
