@@ -13,23 +13,19 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ReservationResponse {
+public class ReserveInventoryResponse {
   private UUID reservationId;
-  private UUID orderId;
-  private boolean success;
-  private String message;
-  private Instant expirationDate;
-  private List<ReservedItem> items;
+  private boolean status;
+  private List<Item> items;
+  private Instant expiresAt;
 
   @Data
   @Builder
   @NoArgsConstructor
   @AllArgsConstructor
-  public static class ReservedItem {
-    private String sku;
+  public static class Item {
+    private UUID productId;
+    private UUID variantId;
     private int quantity;
-    private Long productId;
-    private boolean reserved;
-    private String message;
   }
-}
+} 
