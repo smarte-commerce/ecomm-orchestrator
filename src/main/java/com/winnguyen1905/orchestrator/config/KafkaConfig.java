@@ -10,6 +10,7 @@ import com.winnguyen1905.orchestrator.core.feign.OrderServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.PaymentServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.ProductServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.PromotionServiceClient;
+import com.winnguyen1905.orchestrator.core.feign.ShippingServiceClient;
 import com.winnguyen1905.orchestrator.messaging.KafkaProducer;
 import com.winnguyen1905.orchestrator.model.event.SagaEvent;
 import com.winnguyen1905.orchestrator.persistance.repository.SagaStateRepository;
@@ -34,6 +35,7 @@ public class KafkaConfig {
       ProductServiceClient productServiceClient,
       PaymentServiceClient paymentServiceClient,
       PromotionServiceClient promotionServiceClient,
+      ShippingServiceClient shippingServiceClient,
       KafkaProducer kafkaProducer) {
 
     return new OrderSagaOrchestrator(
@@ -44,6 +46,7 @@ public class KafkaConfig {
         productServiceClient,
         paymentServiceClient,
         promotionServiceClient,
+        shippingServiceClient,
         kafkaProducer);
   }
 

@@ -49,6 +49,28 @@ public interface OrderServiceClient {
       @RequestBody BigDecimal discountAmount);
 
   /**
+   * Update order payment amounts
+   */
+  @PutMapping("/api/orders/{orderId}/payment-amounts")
+  ResponseEntity<RestResponse<Void>> updateOrderPaymentAmounts(
+      @PathVariable("orderId") UUID orderId,
+      @RequestBody OrderPaymentAmountsUpdate paymentAmountsUpdate);
+
+  /**
+   * Mark order as paid (sets paidAmount = totalAmount, amountToBePaid = 0)
+   */
+  @PutMapping("/api/orders/{orderId}/mark-paid")
+  ResponseEntity<RestResponse<Void>> markOrderAsPaid(
+      @PathVariable("orderId") UUID orderId,
+      @RequestParam("paidAmount") BigDecimal paidAmount);
+
+  /**
+   * Mark order as unpaid (sets paidAmount = 0, amountToBePaid = totalAmount)
+   */
+  @PutMapping("/api/orders/{orderId}/mark-unpaid")
+  ResponseEntity<RestResponse<Void>> markOrderAsUnpaid(@PathVariable("orderId") UUID orderId);
+
+  /**
    * Create separate orders for each shop
    */
   @PostMapping("/api/orders/create-shop-orders")
@@ -75,6 +97,26 @@ public interface OrderServiceClient {
   ResponseEntity<RestResponse<Void>> updateOrderPayment(
       @PathVariable("orderId") UUID orderId,
       @RequestBody OrderPaymentUpdate paymentUpdate);
+
+  /**
+   * DTO for order payment amounts update
+   */
+  public static class OrderPaymentAmountsUpdate {
+    private BigDecimal paidAmount;
+    private BigDecimal amountToBePaid;
+
+    public OrderPaymentAmountsUpdate() {}
+
+    public OrderPaymentAmountsUpdate(BigDecimal paidAmount, BigDecimal amountToBePaid) {
+      this.paidAmount = paidAmount;
+      this.amountToBePaid = amountToBePaid;
+    }
+
+    public BigDecimal getPaidAmount() { return paidAmount; }
+    public void setPaidAmount(BigDecimal paidAmount) { this.paidAmount = paidAmount; }
+    public BigDecimal getAmountToBePaid() { return amountToBePaid; }
+    public void setAmountToBePaid(BigDecimal amountToBePaid) { this.amountToBePaid = amountToBePaid; }
+  }
 
   /**
    * DTO for order pricing updates
