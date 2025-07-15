@@ -21,7 +21,8 @@ import lombok.experimental.SuperBuilder;
     @JsonSubTypes.Type(value = OrderApprovedEvent.class, name = "OrderApproved"),
     @JsonSubTypes.Type(value = OrderCancelledEvent.class, name = "OrderCancelled"),
     @JsonSubTypes.Type(value = CouponAppliedEvent.class, name = "CouponApplied"),
-    @JsonSubTypes.Type(value = SplitPaymentEvent.class, name = "SplitPayment")
+    @JsonSubTypes.Type(value = SplitPaymentEvent.class, name = "SplitPayment"),
+    @JsonSubTypes.Type(value = ShippingCalculatedEvent.class, name = "ShippingCalculated")
 })
 @Data
 @SuperBuilder
