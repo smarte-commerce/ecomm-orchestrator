@@ -26,6 +26,9 @@ public class OrderCreatedEvent extends SagaEvent {
 
   // Order details for orchestrator
   private UUID customerId;
+  private String customerName;
+  private String customerEmail;
+  private String customerPhone;
   private String orderNumber;
   private String paymentMethod = "ONLINE";
   private String currency;
@@ -45,6 +48,23 @@ public class OrderCreatedEvent extends SagaEvent {
     private String notes;
     private List<OrderItem> items;
     private UUID shopProductDiscountId;
+    private ShopAddress shopAddress;
+  }
+
+  @Data
+  @Builder
+  @NoArgsConstructor
+  @AllArgsConstructor
+  public static class ShopAddress {
+    private String shopName;
+    private String contactEmail;
+    private String contactPhone;
+    private String street;
+    private String city;
+    private String state;
+    private String zipCode;
+    private String country;
+    private String addressLine2;
   }
 
   @Data

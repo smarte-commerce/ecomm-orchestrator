@@ -18,6 +18,7 @@ import com.winnguyen1905.orchestrator.core.feign.OrderServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.PaymentServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.ProductServiceClient;
 import com.winnguyen1905.orchestrator.core.feign.PromotionServiceClient;
+import com.winnguyen1905.orchestrator.core.feign.ShippingServiceClient;
 import com.winnguyen1905.orchestrator.messaging.KafkaProducer;
 import com.winnguyen1905.orchestrator.model.event.CouponAppliedEvent;
 import com.winnguyen1905.orchestrator.model.event.OrderApprovedEvent;
@@ -28,6 +29,7 @@ import com.winnguyen1905.orchestrator.model.event.PaymentProcessedEvent;
 import com.winnguyen1905.orchestrator.model.event.ProductReservationFailedEvent;
 import com.winnguyen1905.orchestrator.model.event.ProductReservedEvent;
 import com.winnguyen1905.orchestrator.model.event.SagaEvent;
+import com.winnguyen1905.orchestrator.model.event.ShippingCalculatedEvent;
 import com.winnguyen1905.orchestrator.model.request.ComprehensiveDiscountRequest;
 import com.winnguyen1905.orchestrator.model.request.CouponValidationRequest;
 import com.winnguyen1905.orchestrator.model.request.CreateShopOrderRequest;
@@ -36,6 +38,7 @@ import com.winnguyen1905.orchestrator.model.request.PriceCalculationRequest;
 import com.winnguyen1905.orchestrator.model.request.RefundRequest;
 import com.winnguyen1905.orchestrator.model.request.ReservationRequest;
 import com.winnguyen1905.orchestrator.model.request.ReserveInventoryRequest;
+import com.winnguyen1905.orchestrator.model.request.ShippingQuoteRequest;
 import com.winnguyen1905.orchestrator.model.response.ComprehensiveDiscountResponse;
 import com.winnguyen1905.orchestrator.model.response.CouponValidationResponse;
 import com.winnguyen1905.orchestrator.model.response.KafkaOrchestratorResponseDTO;
@@ -45,6 +48,7 @@ import com.winnguyen1905.orchestrator.model.response.PriceCalculationResponse;
 import com.winnguyen1905.orchestrator.model.response.ReservationResponse;
 import com.winnguyen1905.orchestrator.model.response.ReserveInventoryResponse;
 import com.winnguyen1905.orchestrator.model.response.RestResponse;
+import com.winnguyen1905.orchestrator.model.response.ShippingQuoteResponse;
 import com.winnguyen1905.orchestrator.util.ReservationRequestConverter;
 import com.winnguyen1905.orchestrator.util.ReservationResponseConverter;
 import com.winnguyen1905.orchestrator.persistance.entity.ESagaState;
@@ -66,6 +70,7 @@ public class OrderSagaOrchestrator {
   private final ProductServiceClient productServiceClient;
   private final PaymentServiceClient paymentServiceClient;
   private final PromotionServiceClient promotionServiceClient;
+  private final ShippingServiceClient shippingServiceClient;
   private final KafkaProducer kafkaProducer;
 
   // Kafka topics
@@ -181,6 +186,14 @@ public class OrderSagaOrchestrator {
     handleCouponApplied(event);
   }
 
+  /**
+   * Process the ShippingCalculated event
+   */
+  @Transactional
+  public void processShippingCalculated(ShippingCalculatedEvent event) {
+    handleShippingCalculated(event);
+  }
+
   @Transactional
   public void handleCreateOrder_New(OrderCreatedEvent event) {
     UUID sagaId = event.getSagaId();
@@ -279,42 +292,42 @@ public class OrderSagaOrchestrator {
 
       ComprehensiveDiscountRequest discountRequest;
       ComprehensiveDiscountResponse discountData;
-      
+
       try {
         discountRequest = buildComprehensiveDiscountRequest(event, pricingResponse.data());
-        
+
         log.info("Calling promotion service for comprehensive discounts with sagaId: {}", sagaId);
         RestResponse<ComprehensiveDiscountResponse> discountResponse = promotionServiceClient
             .applyComprehensiveDiscounts(discountRequest).getBody();
 
         if (discountResponse == null || discountResponse.data() == null) {
           log.error("Promotion service returned null or empty response for sagaId: {}", sagaId);
-          handleDiscountApplicationFailure(sagaId, orderId, event.getEventId(), 
+          handleDiscountApplicationFailure(sagaId, orderId, event.getEventId(),
               "Promotion service returned null response");
           return;
         }
-        
+
         discountData = discountResponse.data();
-        log.info("Successfully applied comprehensive discounts for sagaId: {}, processed {} shops", 
-                 sagaId, discountData.getCheckoutItems().size());
-        
+        log.info("Successfully applied comprehensive discounts for sagaId: {}, processed {} shops",
+            sagaId, discountData.getCheckoutItems().size());
+
       } catch (Exception e) {
         log.error("Failed to apply comprehensive discounts for sagaId: {}", sagaId, e);
-        handleDiscountApplicationFailure(sagaId, orderId, event.getEventId(), 
+        handleDiscountApplicationFailure(sagaId, orderId, event.getEventId(),
             "Failed to apply discounts: " + e.getMessage());
         return;
       }
 
-      // Create shop orders with pricing and discount information
-      sagaState.setCurrentStep("STEP_6_CREATE_SHOP_ORDERS");
+      // STEP 6: Calculate shipping costs for each shop's orders
+      sagaState.setCurrentStep("STEP_6_CALCULATE_SHIPPING_COSTS");
       sagaStateRepository.save(sagaState);
 
-      List<CreateShopOrderRequest> shopOrderRequests = buildShopOrderRequests(event, pricingResponse.data(),
+      List<CreateShopOrderRequest> shopOrderRequests = buildShopOrderRequestsWithShipping(event, pricingResponse.data(),
           discountData, reservationResponse);
 
-      // TODO: IMPLEMENTATION: SHIPPING API LOGIC HERE , Currently we are not using
-      // shipping service
-      // ___________________________________
+      // STEP 7: Create shop orders with calculated shipping costs
+      sagaState.setCurrentStep("STEP_7_CREATE_SHOP_ORDERS");
+      sagaStateRepository.save(sagaState);
 
       // CREATE ORDER BUT PAYMENT IS NOT PROCESSED YET
       RestResponse<List<OrderResponse>> shopOrdersResponse = orderServiceClient.createShopOrders(shopOrderRequests)
@@ -325,18 +338,27 @@ public class OrderSagaOrchestrator {
         return;
       }
 
-      // STEP 6: Process payment based on payment method
+      // STEP 8: Process payment based on payment method
       if ("ONLINE".equals(event.getPaymentMethod())) {
-        sagaState.setCurrentStep("STEP_7_PROCESS_PAYMENTS");
+        sagaState.setCurrentStep("STEP_8_PROCESS_PAYMENTS");
         sagaStateRepository.save(sagaState);
 
         processPaymentsForShopOrders(event, shopOrdersResponse.data(), discountData);
       } else {
-        // For COD or other payment methods, mark orders as confirmed
-        sagaState.setCurrentStep("STEP_7_UPDATE_ORDER_STATUS");
+        // For COD or other payment methods, mark orders as confirmed but unpaid
+        sagaState.setCurrentStep("STEP_8_UPDATE_ORDER_STATUS");
         sagaStateRepository.save(sagaState);
 
         updateShopOrdersStatus(shopOrdersResponse.data(), "CONFIRMED", "Order confirmed - COD payment");
+
+        // For COD, mark orders as unpaid since payment will be collected on delivery
+        shopOrdersResponse.data().forEach(order -> {
+          try {
+            orderServiceClient.markOrderAsUnpaid(order.getId());
+          } catch (Exception e) {
+            log.error("Failed to mark COD order {} as unpaid", order.getId(), e);
+          }
+        });
       }
 
       // Publish ShopOrdersCreated event
@@ -727,6 +749,9 @@ public class OrderSagaOrchestrator {
       // Publish PaymentProcessed event to Kafka
       kafkaTemplate.send(paymentProcessedTopic, event);
 
+      // Mark order as paid with the payment amount
+      orderServiceClient.markOrderAsPaid(orderId, BigDecimal.valueOf(event.getAmount()));
+
       // Call Order service to update order status
       orderServiceClient.updateOrderStatus(orderId, "CONFIRMED", "Payment processed successfully");
 
@@ -774,7 +799,7 @@ public class OrderSagaOrchestrator {
       sagaState.setErrorMessage("Failed to approve order: " + e.getMessage());
       sagaStateRepository.save(sagaState);
 
-      // Start compensation - refund payment
+      // Start compensation - refund payment and mark order as unpaid
       try {
         RefundRequest refundRequest = RefundRequest.builder()
             .orderId(orderId)
@@ -784,6 +809,9 @@ public class OrderSagaOrchestrator {
             .build();
 
         paymentServiceClient.issueRefund(event.getPaymentId(), refundRequest);
+
+        // Mark order as unpaid since payment was refunded
+        orderServiceClient.markOrderAsUnpaid(orderId);
 
         // Send cancel messages
         KafkaOrchestratorResponseDTO cancelProductPayload = KafkaOrchestratorResponseDTO.builder()
@@ -839,6 +867,9 @@ public class OrderSagaOrchestrator {
 
       // Publish PaymentFailed event to Kafka
       kafkaTemplate.send(paymentFailedTopic, event);
+
+      // Mark order as unpaid since payment failed
+      orderServiceClient.markOrderAsUnpaid(orderId);
 
       // Update order status to payment failed
       orderServiceClient.updateOrderStatus(orderId, "PAYMENT_FAILED", event.getErrorMessage());
@@ -1021,7 +1052,7 @@ public class OrderSagaOrchestrator {
 
   private ComprehensiveDiscountRequest buildComprehensiveDiscountRequest(OrderCreatedEvent event,
       PriceCalculationResponse pricingData) {
-    
+
     // Validate input parameters
     if (event == null) {
       throw new IllegalArgumentException("OrderCreatedEvent cannot be null");
@@ -1029,10 +1060,10 @@ public class OrderSagaOrchestrator {
     if (pricingData == null || pricingData.getShopPricings() == null) {
       throw new IllegalArgumentException("PriceCalculationResponse or shopPricings cannot be null");
     }
-    
-    log.debug("Building comprehensive discount request for sagaId: {}, customerId: {}", 
-              event.getSagaId(), event.getCustomerId());
-    
+
+    log.debug("Building comprehensive discount request for sagaId: {}, customerId: {}",
+        event.getSagaId(), event.getCustomerId());
+
     // Build list of DrawOrder items for each shop
     List<ComprehensiveDiscountRequest.DrawOrder> checkoutItems = new ArrayList<>();
 
@@ -1041,7 +1072,7 @@ public class OrderSagaOrchestrator {
         log.warn("Skipping null shop or shop with null ID in pricing data");
         continue;
       }
-      
+
       OrderCreatedEvent.CheckoutItem checkoutItem = event.getCheckoutItems().stream()
           .filter(item -> item != null && Objects.equals(item.getShopId(), shop.getShopId()))
           .findFirst()
@@ -1050,7 +1081,7 @@ public class OrderSagaOrchestrator {
       if (checkoutItem != null) {
         // Validate and build DrawOrderItem list using unit prices from pricing response
         List<ComprehensiveDiscountRequest.DrawOrderItem> items = new ArrayList<>();
-        
+
         if (shop.getProductPricings() != null) {
           items = shop.getProductPricings()
               .stream()
@@ -1065,8 +1096,8 @@ public class OrderSagaOrchestrator {
                       .productSku(product.getProductSku())
                       .build();
                 } catch (Exception e) {
-                  log.error("Failed to build DrawOrderItem for product {}: {}", 
-                           product.getProductId(), e.getMessage());
+                  log.error("Failed to build DrawOrderItem for product {}: {}",
+                      product.getProductId(), e.getMessage());
                   return null;
                 }
               })
@@ -1081,9 +1112,9 @@ public class OrderSagaOrchestrator {
               .items(items)
               .shopProductDiscountId(checkoutItem.getShopProductDiscountId())
               .build());
-          
-          log.debug("Added shop {} with {} items to comprehensive discount request", 
-                   shop.getShopId(), items.size());
+
+          log.debug("Added shop {} with {} items to comprehensive discount request",
+              shop.getShopId(), items.size());
         } else {
           log.warn("No valid items found for shop {}, skipping discount application", shop.getShopId());
         }
@@ -1104,10 +1135,10 @@ public class OrderSagaOrchestrator {
         .globalShippingDiscountId(event.getShippingDiscountId())
         .checkoutItems(checkoutItems)
         .build();
-    
-    log.info("Built comprehensive discount request for {} shops with sagaId: {}", 
-             checkoutItems.size(), event.getSagaId());
-    
+
+    log.info("Built comprehensive discount request for {} shops with sagaId: {}",
+        checkoutItems.size(), event.getSagaId());
+
     return request;
   }
 
@@ -1188,6 +1219,228 @@ public class OrderSagaOrchestrator {
     return requests;
   }
 
+  private List<CreateShopOrderRequest> buildShopOrderRequestsWithShipping(OrderCreatedEvent event,
+      PriceCalculationResponse pricingData,
+      ComprehensiveDiscountResponse discountData, ReservationResponse reservationData) {
+    List<CreateShopOrderRequest> requests = new ArrayList<>();
+
+    for (PriceCalculationResponse.ShopPricing shop : pricingData.getShopPricings()) {
+      OrderCreatedEvent.CheckoutItem checkoutItem = event.getCheckoutItems().stream()
+          .filter(item -> item.getShopId().equals(shop.getShopId()))
+          .findFirst()
+          .orElse(null);
+
+      if (checkoutItem != null) {
+        // Find discount data for this shop from the response
+        ComprehensiveDiscountResponse.DrawOrder shopDiscountData = discountData.getCheckoutItems().stream()
+            .filter(discountOrder -> discountOrder.getShopId().equals(shop.getShopId()))
+            .findFirst()
+            .orElse(null);
+
+        List<CreateShopOrderRequest.OrderItem> orderItems = shop.getProductPricings().stream()
+            .map(product -> CreateShopOrderRequest.OrderItem.builder()
+                .productId(product.getProductId())
+                .variantId(product.getVariantId())
+                .productSku(product.getProductSku())
+                .quantity(product.getQuantity())
+                .unitPrice(product.getUnitPrice())
+                .lineTotal(product.getLineTotal())
+                .reservationId(product.getReservationId())
+                .build())
+            .collect(Collectors.toList());
+
+        // Calculate shipping costs for this shop
+        double shippingCost = calculateShippingCostForShop(event, shop, orderItems);
+
+        // Calculate shop total using discount data from response plus shipping
+        double shopDiscountAmount = shopDiscountData != null
+            ? (shopDiscountData.getTotalShopDiscounts() + shopDiscountData.getTotalGlobalDiscounts())
+            : 0.0;
+        double shopTotal = shop.getSubtotal() - shopDiscountAmount + shop.getTaxAmount() + shippingCost;
+
+        requests.add(CreateShopOrderRequest.builder()
+            .sagaId(event.getSagaId())
+            .parentOrderId(event.getOrderId())
+            .shopId(shop.getShopId())
+            .customerId(event.getCustomerId())
+            .orderNumber(event.getOrderNumber() + "-" + shop.getShopId().toString().substring(0, 8))
+            .currency(event.getCurrency())
+            .shippingAddress(event.getShippingAddress())
+            .billingAddress(event.getBillingAddress())
+            .paymentMethod(event.getPaymentMethod())
+            .items(orderItems)
+            .shopProductDiscountId(checkoutItem.getShopProductDiscountId())
+            .shopSubtotal(shop.getSubtotal())
+            .shopDiscountAmount(shopDiscountAmount)
+            .shopTaxAmount(shop.getTaxAmount())
+            .shopShippingAmount(shippingCost)
+            .shopTotalAmount(shopTotal)
+            .build());
+      }
+    }
+
+    return requests;
+  }
+
+  private double calculateShippingCostForShop(OrderCreatedEvent event,
+      PriceCalculationResponse.ShopPricing shop,
+      List<CreateShopOrderRequest.OrderItem> items) {
+    try {
+      // Build shipping quote request for this specific shop
+      ShippingQuoteRequest shippingRequest = buildShippingQuoteRequest(event, shop, items);
+
+      // Get shipping quotes using checkout calculation (fresh quotes)
+      RestResponse<ShippingQuoteResponse> shippingResponse = shippingServiceClient
+          .calculateCheckoutShipping(shippingRequest, true).getBody();
+
+      if (shippingResponse != null && shippingResponse.data() != null) {
+        ShippingQuoteResponse quotes = shippingResponse.data();
+
+        // Use the recommended option or cheapest if no recommendation
+        ShippingQuoteResponse.ShippingOption selectedOption = quotes.getRecommendedOption();
+        if (selectedOption == null) {
+          selectedOption = quotes.getCheapestValidOption();
+        }
+
+        if (selectedOption != null && selectedOption.getCost() != null) {
+          return selectedOption.getCost().doubleValue();
+        }
+      }
+
+      log.warn("Unable to calculate shipping cost for shop {}, using default", shop.getShopId());
+      return 5.0; // Default shipping cost fallback
+
+    } catch (Exception e) {
+      log.error("Error calculating shipping cost for shop {}: {}", shop.getShopId(), e.getMessage());
+      return 5.0; // Default shipping cost on error
+    }
+  }
+
+  private ShippingQuoteRequest buildShippingQuoteRequest(OrderCreatedEvent event,
+      PriceCalculationResponse.ShopPricing shop,
+      List<CreateShopOrderRequest.OrderItem> items) {
+
+    // Extract real customer information from event
+    ShippingQuoteRequest.CustomerInfo customerInfo = ShippingQuoteRequest.CustomerInfo.builder()
+        .name(event.getCustomerName() != null ? event.getCustomerName() : "Customer")
+        .address(parseAddressFromString(event.getShippingAddress()))
+        .email(event.getCustomerEmail() != null ? event.getCustomerEmail() : "customer@example.com")
+        .phone(event.getCustomerPhone() != null ? event.getCustomerPhone() : "+1234567890")
+        .build();
+
+    // Find shop address from checkout items
+    OrderCreatedEvent.CheckoutItem checkoutItem = event.getCheckoutItems().stream()
+        .filter(item -> item.getShopId().equals(shop.getShopId()))
+        .findFirst()
+        .orElse(null);
+
+    // Build vendor information using real shop address data
+    ShippingQuoteRequest.VendorInfo vendorInfo = buildVendorInfoFromCheckoutItem(checkoutItem, shop.getShopId());
+
+    // Calculate total weight and dimensions for all items
+    double totalWeight = calculateTotalWeight(event);
+    BigDecimal totalValue = BigDecimal.valueOf(shop.getSubtotal());
+
+    // Build package information
+    ShippingQuoteRequest.PackageInfo packageInfo = ShippingQuoteRequest.PackageInfo.builder()
+        .weight(BigDecimal.valueOf(totalWeight))
+        .dimensions(ShippingQuoteRequest.DimensionsInfo.builder()
+            .length(BigDecimal.valueOf(30.0)) // Default dimensions
+            .width(BigDecimal.valueOf(20.0))
+            .height(BigDecimal.valueOf(15.0))
+            .unit("cm")
+            .build())
+        .type("box")
+        .declaredValue(totalValue)
+        .currency(event.getCurrency())
+        .isFragile(false)
+        .isLiquid(false)
+        .isHazardous(false)
+        .contentDescription("E-commerce order items")
+        .build();
+
+    return ShippingQuoteRequest.builder()
+        .customer(customerInfo)
+        .vendor(vendorInfo)
+        .packageInfo(packageInfo)
+        .requireInsurance(false)
+        .preferredCurrency(event.getCurrency())
+        .build();
+  }
+
+  private ShippingQuoteRequest.VendorInfo buildVendorInfoFromCheckoutItem(
+      OrderCreatedEvent.CheckoutItem checkoutItem, UUID shopId) {
+
+    if (checkoutItem != null && checkoutItem.getShopAddress() != null) {
+      OrderCreatedEvent.ShopAddress shopAddr = checkoutItem.getShopAddress();
+
+      return ShippingQuoteRequest.VendorInfo.builder()
+          .name(shopAddr.getShopName() != null ? shopAddr.getShopName() : "Shop " + shopId.toString().substring(0, 8))
+          .vendorId(shopId.toString())
+          .address(ShippingQuoteRequest.AddressInfo.builder()
+              .street(shopAddr.getStreet() != null ? shopAddr.getStreet() : "Unknown Street")
+              .city(shopAddr.getCity() != null ? shopAddr.getCity() : "Unknown City")
+              .state(shopAddr.getState() != null ? shopAddr.getState() : "Unknown State")
+              .zip(shopAddr.getZipCode() != null ? shopAddr.getZipCode() : "00000")
+              .country(shopAddr.getCountry() != null ? shopAddr.getCountry() : "VN")
+              .addressLine2(shopAddr.getAddressLine2())
+              .build())
+          .contactEmail(shopAddr.getContactEmail() != null ? shopAddr.getContactEmail() : "shop@example.com")
+          .contactPhone(shopAddr.getContactPhone() != null ? shopAddr.getContactPhone() : "+1234567890")
+          .build();
+    } else {
+      // Fallback to default vendor info when shop address is not available
+      return ShippingQuoteRequest.VendorInfo.builder()
+          .name("Shop " + shopId.toString().substring(0, 8))
+          .vendorId(shopId.toString())
+          .address(getDefaultVendorAddress())
+          .contactEmail("shop@example.com")
+          .contactPhone("+1234567890")
+          .build();
+    }
+  }
+
+  private ShippingQuoteRequest.AddressInfo parseAddressFromString(String addressString) {
+    // Enhanced address parsing to extract more information from address string
+    if (addressString == null || addressString.trim().isEmpty()) {
+      return getDefaultCustomerAddress();
+    }
+
+    // Try to parse structured address information
+    // This is a simple implementation - in production you'd use a proper address
+    // parser
+    String[] parts = addressString.split(",");
+
+    return ShippingQuoteRequest.AddressInfo.builder()
+        .street(parts.length > 0 ? parts[0].trim() : "Unknown Street")
+        .city(parts.length > 1 ? parts[1].trim() : "Unknown City")
+        .state(parts.length > 2 ? parts[2].trim() : "Unknown State")
+        .zip(parts.length > 3 ? parts[3].trim() : "00000")
+        .country(parts.length > 4 ? parts[4].trim() : "VN") // Default to Vietnam
+        .build();
+  }
+
+  private ShippingQuoteRequest.AddressInfo getDefaultCustomerAddress() {
+    return ShippingQuoteRequest.AddressInfo.builder()
+        .street("Unknown Street")
+        .city("Ho Chi Minh City")
+        .state("Ho Chi Minh")
+        .zip("70000")
+        .country("VN")
+        .build();
+  }
+
+  private ShippingQuoteRequest.AddressInfo getDefaultVendorAddress() {
+    // Default vendor address - this should come from a shop/vendor service
+    return ShippingQuoteRequest.AddressInfo.builder()
+        .street("123 Vendor Street")
+        .city("Ho Chi Minh City")
+        .state("Ho Chi Minh")
+        .zip("70000")
+        .country("VN")
+        .build();
+  }
+
   // TODO: IMPLEMENTATION: PAYMENT API LOGIC HERE , Currently we are not using
   // payment service
   private void processPaymentsForShopOrders(OrderCreatedEvent event, List<OrderResponse> shopOrders,
@@ -1197,7 +1450,7 @@ public class OrderSagaOrchestrator {
         .mapToDouble(order -> order.getTotalAmount().doubleValue())
         .sum();
 
-    // TODO: pay chung thì thoio còn riêng thì tạo OrderId riêngriêng
+    // TODO: pay chung thì thôi còn riêng thì tạo OrderId riêng
     PaymentRequest paymentRequest = PaymentRequest.builder()
         // .orderId(event.getOrderId())
         .customerId(event.getCustomerId()) // Convert from Long to UUID properly based on business logic
@@ -1213,8 +1466,26 @@ public class OrderSagaOrchestrator {
     if (paymentResponse != null && paymentResponse.data() != null
         && "COMPLETED".equals(paymentResponse.data().getStatus())) {
       updateShopOrdersStatus(shopOrders, "PAYMENT_COMPLETED", "Payment processed successfully");
+
+      // Mark all shop orders as paid
+      shopOrders.forEach(order -> {
+        try {
+          orderServiceClient.markOrderAsPaid(order.getId(), BigDecimal.valueOf(order.getTotalAmount().doubleValue()));
+        } catch (Exception e) {
+          log.error("Failed to mark shop order {} as paid", order.getId(), e);
+        }
+      });
     } else {
       updateShopOrdersStatus(shopOrders, "PAYMENT_FAILED", "Payment processing failed");
+
+      // Mark all shop orders as unpaid
+      shopOrders.forEach(order -> {
+        try {
+          orderServiceClient.markOrderAsUnpaid(order.getId());
+        } catch (Exception e) {
+          log.error("Failed to mark shop order {} as unpaid", order.getId(), e);
+        }
+      });
     }
   }
 
@@ -1238,5 +1509,45 @@ public class OrderSagaOrchestrator {
         .flatMap(checkoutItem -> checkoutItem.getItems().stream())
         .mapToDouble(item -> item.getWeight() != null ? item.getWeight() * item.getQuantity() : 0.0)
         .sum();
+  }
+
+  /**
+   * Handles ShippingCalculated event
+   */
+  @Transactional
+  public void handleShippingCalculated(ShippingCalculatedEvent event) {
+    UUID sagaId = event.getSagaId();
+    UUID orderId = event.getOrderId();
+
+    log.info("Handling ShippingCalculated event for orderId: {}, sagaId: {}", orderId, sagaId);
+
+    try {
+      // Update saga state
+      ESagaState sagaState = sagaStateRepository.findById(sagaId)
+          .orElseThrow(() -> new RuntimeException("Saga not found: " + sagaId));
+
+      sagaState.setStatus(SagaStatus.PRODUCT_RESERVED);
+      sagaState.setCurrentStep("SHIPPING_COSTS_CALCULATED");
+      sagaStateRepository.save(sagaState);
+
+      log.info("Shipping calculated successfully for orderId: {}, total cost: {}",
+          orderId, event.getTotalShippingCost());
+
+    } catch (Exception e) {
+      log.error("Error handling ShippingCalculated event for orderId: " + orderId, e);
+    }
+  }
+
+  private void handleShippingCalculationFailure(UUID sagaId, UUID orderId, UUID causationId, String reason) {
+    log.error("Shipping calculation failed for orderId: {}, reason: {}", orderId, reason);
+
+    ESagaState sagaState = sagaStateRepository.findById(sagaId)
+        .orElseThrow(() -> new RuntimeException("Saga not found: " + sagaId));
+
+    sagaState.setStatus(SagaStatus.FAILED);
+    sagaState.setErrorMessage(reason);
+    sagaStateRepository.save(sagaState);
+
+    orderServiceClient.updateOrderStatus(orderId, "SHIPPING_ERROR", reason);
   }
 }
