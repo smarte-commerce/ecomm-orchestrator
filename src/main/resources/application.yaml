@@ -114,6 +114,7 @@ topic:
     stock.update: product-update
     # Payment topics
     payment.in: process-payment
+    payment.requests: payment-requests
     payment.out: payment-processed
     payment.cancel: cancel-payment
     # Promotion topics

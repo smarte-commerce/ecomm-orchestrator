@@ -16,6 +16,7 @@ import lombok.experimental.SuperBuilder;
     @JsonSubTypes.Type(value = OrderCreatedEvent.class, name = "OrderCreated"),
     @JsonSubTypes.Type(value = ProductReservedEvent.class, name = "ProductReserved"),
     @JsonSubTypes.Type(value = ProductReservationFailedEvent.class, name = "ProductReservationFailed"),
+    @JsonSubTypes.Type(value = PaymentRequestedEvent.class, name = "PaymentRequested"),
     @JsonSubTypes.Type(value = PaymentProcessedEvent.class, name = "PaymentProcessed"),
     @JsonSubTypes.Type(value = PaymentFailedEvent.class, name = "PaymentFailed"),
     @JsonSubTypes.Type(value = OrderApprovedEvent.class, name = "OrderApproved"),

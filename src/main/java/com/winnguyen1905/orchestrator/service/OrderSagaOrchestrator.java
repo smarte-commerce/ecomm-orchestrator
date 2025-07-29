@@ -26,6 +26,7 @@ import com.winnguyen1905.orchestrator.model.event.OrderCancelledEvent;
 import com.winnguyen1905.orchestrator.model.event.OrderCreatedEvent;
 import com.winnguyen1905.orchestrator.model.event.PaymentFailedEvent;
 import com.winnguyen1905.orchestrator.model.event.PaymentProcessedEvent;
+import com.winnguyen1905.orchestrator.model.event.PaymentRequestedEvent;
 import com.winnguyen1905.orchestrator.model.event.ProductReservationFailedEvent;
 import com.winnguyen1905.orchestrator.model.event.ProductReservedEvent;
 import com.winnguyen1905.orchestrator.model.event.SagaEvent;
@@ -80,6 +81,8 @@ public class OrderSagaOrchestrator {
   private String productReservedTopic;
   @Value("${topic.name.stock.cancel}")
   private String productReservationFailedTopic;
+  @Value("${topic.name.payment.requests}")
+  private String paymentRequestsTopic;
   @Value("${topic.name.payment.out}")
   private String paymentProcessedTopic;
   @Value("${topic.name.payment.cancel}")
@@ -676,13 +679,36 @@ public class OrderSagaOrchestrator {
    * Process payment with either original or discounted amount
    */
   private void processPayment(UUID sagaId, UUID orderId, OrderResponse order, UUID causationId) {
+    // Create and publish PaymentRequested event to Kafka
+    PaymentRequestedEvent paymentRequestedEvent = PaymentRequestedEvent.builder()
+        .eventId(UUID.randomUUID())
+        .sagaId(sagaId)
+        .orderId(orderId)
+        .eventType("PaymentRequested")
+        .timestamp(Instant.now())
+        .retryCount(0)
+        .correlationId(sagaId)
+        .causationId(causationId)
+        .amount(order.getTotalAmount())
+        .currency("VND") // Using VND as mentioned in user requirements
+        .callbackTopic("payment-status-updates")
+        .paymentMethod("CREDIT_CARD") // This would come from the order in a real implementation
+        .customerId(order.getCustomerId())
+        .description("Payment for order " + order.getOrderNumber())
+        .requestedAt(Instant.now())
+        .build();
+
+    // Publish PaymentRequested event to Kafka
+    kafkaTemplate.send(paymentRequestsTopic, paymentRequestedEvent);
+    log.info("Published PaymentRequested event for orderId: {}, sagaId: {}", orderId, sagaId);
+
     // Prepare payment request
     PaymentRequest paymentRequest = PaymentRequest.builder()
         .orderId(orderId)
         .customerId(order.getCustomerId())
         .amount(order.getTotalAmount())
         .paymentMethod("CREDIT_CARD") // This would come from the order in a real implementation
-        .currency("USD")
+        .currency("VND")
         .description("Payment for order " + order.getOrderNumber())
         .build();
 
@@ -1441,7 +1467,7 @@ public class OrderSagaOrchestrator {
         .build();
   }
 
-  // TODO: IMPLEMENTATION: PAYMENT API LOGIC HERE , Currently we are not using
+  // TODO: IMPLEMENTATION: PAYMENT API LOGIC HERE , Currently we are not use
   // payment service
   private void processPaymentsForShopOrders(OrderCreatedEvent event, List<OrderResponse> shopOrders,
       ComprehensiveDiscountResponse discountData) {
