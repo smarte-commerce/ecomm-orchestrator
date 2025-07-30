@@ -16,10 +16,10 @@ import lombok.experimental.SuperBuilder;
 @NoArgsConstructor
 @AllArgsConstructor
 public class PaymentFailedEvent extends SagaEvent {
-    private UUID paymentId;
-    private BigDecimal amount;
-    private String paymentMethod;
-    private String errorCode;
-    private String errorMessage;
-    private Instant failedAt;
-} 
+  private UUID paymentId;
+  private BigDecimal amount;
+  private String paymentMethod;
+  private String errorCode;
+  private String errorMessage;
+  private Instant failedAt;
+}

@@ -14,7 +14,7 @@ import lombok.experimental.SuperBuilder;
 @NoArgsConstructor
 @AllArgsConstructor
 public class OrderApprovedEvent extends SagaEvent {
-    private UUID paymentId;
-    private UUID reservationId;
-    private String newOrderStatus;
-} 
+  private UUID paymentId;
+  private UUID reservationId;
+  private String newOrderStatus;
+}

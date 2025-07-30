@@ -16,17 +16,17 @@ import lombok.experimental.SuperBuilder;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ProductReservedEvent extends SagaEvent {
-    private UUID reservationId;
-    private List<ReservedProduct> products;
-    private Instant expirationTime;
-    
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
-    @SuperBuilder
-    public static class ReservedProduct {
-        private String sku;
-        private Long productId;
-        private int quantity;
-    }
-} 
+  private UUID reservationId;
+  private List<ReservedProduct> products;
+  private Instant expirationTime;
+
+  @Data
+  @NoArgsConstructor
+  @AllArgsConstructor
+  @SuperBuilder
+  public static class ReservedProduct {
+    private String sku;
+    private Long productId;
+    private int quantity;
+  }
+}

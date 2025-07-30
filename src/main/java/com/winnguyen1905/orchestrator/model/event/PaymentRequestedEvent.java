@@ -23,4 +23,4 @@ public class PaymentRequestedEvent extends SagaEvent {
   private UUID customerId;
   private String description;
   private Instant requestedAt;
-} 
+}
