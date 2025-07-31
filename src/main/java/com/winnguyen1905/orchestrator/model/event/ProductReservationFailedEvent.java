@@ -14,18 +14,18 @@ import lombok.experimental.SuperBuilder;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ProductReservationFailedEvent extends SagaEvent {
+  private String reason;
+  private List<FailedProduct> products;
+
+  @Data
+  @NoArgsConstructor
+  @AllArgsConstructor
+  @SuperBuilder
+  public static class FailedProduct {
+    private String sku;
+    private Long productId;
+    private int requestedQuantity;
+    private int availableQuantity;
     private String reason;
-    private List<FailedProduct> products;
-    
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
-    @SuperBuilder
-    public static class FailedProduct {
-        private String sku;
-        private Long productId;
-        private int requestedQuantity;
-        private int availableQuantity;
-        private String reason;
-    }
-} 
+  }
+}

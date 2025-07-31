@@ -18,20 +18,20 @@ import lombok.experimental.SuperBuilder;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SplitPaymentEvent extends SagaEvent {
-    private List<PaymentPart> payments;
-    private BigDecimal totalAmount;
-    private boolean completed;
-    private Instant processedAt;
-    
-    @Data
-    @Builder
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class PaymentPart {
-        private UUID paymentId;
-        private String paymentMethod;
-        private String transactionId;
-        private BigDecimal amount;
-        private String status;
-    }
+  private List<PaymentPart> payments;
+  private BigDecimal totalAmount;
+  private boolean completed;
+  private Instant processedAt;
+
+  @Data
+  @Builder
+  @NoArgsConstructor
+  @AllArgsConstructor
+  public static class PaymentPart {
+    private UUID paymentId;
+    private String paymentMethod;
+    private String transactionId;
+    private BigDecimal amount;
+    private String status;
+  }
 }

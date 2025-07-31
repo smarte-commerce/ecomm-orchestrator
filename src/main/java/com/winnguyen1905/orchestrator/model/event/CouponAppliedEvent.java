@@ -16,11 +16,11 @@ import lombok.experimental.SuperBuilder;
 @NoArgsConstructor
 @AllArgsConstructor
 public class CouponAppliedEvent extends SagaEvent {
-    private UUID couponId;
-    private String couponCode;
-    private BigDecimal discountAmount;
-    private BigDecimal discountPercentage;
-    private Instant validUntil;
-    private boolean isApplied;
-    private String errorMessage;
-} 
+  private UUID couponId;
+  private String couponCode;
+  private BigDecimal discountAmount;
+  private BigDecimal discountPercentage;
+  private Instant validUntil;
+  private boolean isApplied;
+  private String errorMessage;
+}
