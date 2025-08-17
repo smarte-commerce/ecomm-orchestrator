@@ -19,7 +19,7 @@ import com.winnguyen1905.orchestrator.model.response.SplitPaymentResponse;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 
-@FeignClient(name = "PAYMENT-SERVICE", url = "${microservices.payment-service.url}")
+@FeignClient(name = "PAYMENT-SERVICE", url = "${microservices.payment-service.url:http://PAYMENT-SERVICE:8092}")
 @CircuitBreaker(name = "paymentService")
 @Retry(name = "paymentService")
 public interface PaymentServiceClient {
